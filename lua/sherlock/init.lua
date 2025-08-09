@@ -1,4 +1,4 @@
-local config = require("paraglide-hints.config")
+local config = require("sherlock.config")
 
 local M = {}
 
