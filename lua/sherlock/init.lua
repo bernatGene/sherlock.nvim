@@ -181,57 +181,59 @@ local function get_json_file_path()
 	return project_root .. "/messages/en.json"
 end
 
--- Add key-value pair to JSON file
 local function add_to_json(file_path, key, value)
-	local content = {}
+	local script_path = vim.fn.stdpath("data") .. "/lazy/sherlock.nvim/scripts/add_to_json.py"
 
-	-- Read existing JSON or create empty object
-	if vim.fn.filereadable(file_path) == 1 then
-		content = vim.fn.readfile(file_path)
-	else
-		-- Create directory if it doesn't exist
-		local dir = vim.fn.fnamemodify(file_path, ":h")
-		vim.fn.mkdir(dir, "p")
-		content = { "{}" }
+	-- If developing locally, adjust path:
+	-- if vim.fn.filereadable(script_path) == 0 then
+	-- 	script_path = "/Users/bernatskrabec/p/sherlock.nvim/scripts/add_to_json.py"
+	-- end
+
+	local result = vim.fn.system({
+		"python3",
+		script_path,
+		file_path,
+		key,
+		vim.fn.json_encode(value),
+	})
+
+	if vim.v.shell_error ~= 0 then
+		vim.notify("Failed to update JSON: " .. result, vim.log.levels.ERROR)
+		return false
 	end
 
-	local json_text = table.concat(content, "\n")
-
-	-- Parse JSON (simple approach)
-	local json_data = vim.fn.json_decode(json_text)
-	if not json_data then
-		json_data = {}
-	end
-
-	-- Add new key-value pair
-	json_data[key] = value
-
-	-- Write back to file
-	local new_json = vim.fn.json_encode(json_data)
-	-- Pretty print with indentation
-	new_json = new_json:gsub(",", ",\n  "):gsub("{", "{\n  "):gsub("}", "\n}"):gsub(':"', '": "')
-
-	vim.fn.writefile(vim.split(new_json, "\n"), file_path)
 	return true
 end
 
 -- Check if selection is a string literal
 local function is_string_literal(text)
-	return (text:match('^".*"$') or text:match("^'.*'$") or text:match("^`.*`$")) ~= nil
-end
+	-- Trim whitespace first
+	text = vim.trim(text)
+	local double_quoted = text:match('^".*"$') ~= nil
+	local single_quoted = text:match("^'.*'$") ~= nil
+	local template_literal = text:match("^`.*`$") ~= nil
 
+	print("Checking string literal:")
+
+	print("  Double quoted: " .. tostring(double_quoted))
+
+	print("  Single quoted: " .. tostring(single_quoted))
+
+	-- print("  Template literal: " .. tostring(template_literal))
+
+	return double_quoted or single_quoted or template_literal
+end
 -- Extract content from string literal
 local function extract_string_content(text)
 	return text:gsub("^[\"`'](.-)[\"'`]$", "%1")
 end
 
--- Code action handler
+-- Code action handler with debugging
 function M.extract_translation()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local filetype = vim.bo[bufnr].filetype
 
 	-- Only work in supported file types
-	-- TODO: this should use the options
 	if filetype ~= "typescript" and filetype ~= "svelte" then
 		vim.notify("Extract translation only works in TypeScript and Svelte files", vim.log.levels.WARN)
 		return
@@ -253,9 +255,20 @@ function M.extract_translation()
 	local lines = vim.api.nvim_buf_get_text(bufnr, start_row, start_col, end_row, end_col, {})
 	local selected_text = table.concat(lines, "\n")
 
+	-- DEBUG: Print what we captured
+	print("Selected text: '" .. selected_text .. "'")
+	print("Length: " .. #selected_text)
+	print("Byte representation:")
+	for i = 1, #selected_text do
+		print("  " .. i .. ": " .. selected_text:byte(i) .. " ('" .. selected_text:sub(i, i) .. "')")
+	end
+
 	-- Check if it's a string literal
 	if not is_string_literal(selected_text) then
-		vim.notify("Selection must be a string literal (quoted text)", vim.log.levels.WARN)
+		vim.notify(
+			"YYYelection must be a string literal (quoted text). Got: '" .. selected_text .. "'",
+			vim.log.levels.WARN
+		)
 		return
 	end
 
@@ -264,6 +277,8 @@ function M.extract_translation()
 
 	-- Generate key
 	local key = generate_key(string_content)
+
+	print("extracted " .. string_content .. " :key " .. key .. "<")
 
 	-- Get JSON file path
 	local json_path = get_json_file_path()
@@ -292,6 +307,7 @@ function M.setup(opts)
 	vim.api.nvim_create_user_command("ParaglideShow", M.show, {})
 	vim.api.nvim_create_user_command("ParaglideHide", M.hide, {})
 	vim.api.nvim_create_user_command("ParaglideToggle", M.toggle, {})
+	vim.api.nvim_create_user_command("ParaglideExtract", M.extract_translation, { range = true })
 end
 
 return M
