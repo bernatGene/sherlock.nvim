@@ -2,6 +2,8 @@ local config = require("sherlock.config")
 
 local M = {}
 
+-- KEY-MESSAGE HINTS
+
 local call_query_string = [[
 (call_expression
   function: (member_expression
@@ -155,6 +157,149 @@ function M.toggle()
 	end
 end
 
+-- MESSAGE EXTRACTION
+
+-- Generate a key from text (first 10 ASCII chars + 5 digit hash)
+local function generate_key(text)
+	-- Extract ASCII chars and convert to lowercase
+	local ascii_part = text:gsub("[^%w]", "_"):lower():sub(1, 10)
+	-- Generate 5 digit hash
+	local hash = math.abs(text:byte(1) or 0)
+	for i = 2, #text do
+		hash = (hash * 31 + text:byte(i)) % 100000
+	end
+	local hash_part = string.format("%05d", hash)
+	return ascii_part .. "_" .. hash_part
+end
+
+-- Get JSON file path
+local function get_json_file_path()
+	local project_root = find_project_root()
+	if not project_root then
+		return nil
+	end
+	return project_root .. "/messages/en.json"
+end
+
+local function add_to_json(file_path, key, value)
+	local script_path = vim.fn.stdpath("data") .. "/lazy/sherlock.nvim/scripts/add_to_json.py"
+
+	-- If developing locally, adjust path:
+	-- if vim.fn.filereadable(script_path) == 0 then
+	-- 	script_path = "/Users/bernatskrabec/p/sherlock.nvim/scripts/add_to_json.py"
+	-- end
+
+	local result = vim.fn.system({
+		"python3",
+		script_path,
+		file_path,
+		key,
+		vim.fn.json_encode(value),
+	})
+
+	if vim.v.shell_error ~= 0 then
+		vim.notify("Failed to update JSON: " .. result, vim.log.levels.ERROR)
+		return false
+	end
+
+	return true
+end
+
+-- Check if selection is a string literal
+local function is_string_literal(text)
+	-- Trim whitespace first
+	text = vim.trim(text)
+	local double_quoted = text:match('^".*"$') ~= nil
+	local single_quoted = text:match("^'.*'$") ~= nil
+	local template_literal = text:match("^`.*`$") ~= nil
+
+	print("Checking string literal:")
+
+	print("  Double quoted: " .. tostring(double_quoted))
+
+	print("  Single quoted: " .. tostring(single_quoted))
+
+	-- print("  Template literal: " .. tostring(template_literal))
+
+	return double_quoted or single_quoted or template_literal
+end
+-- Extract content from string literal
+local function extract_string_content(text)
+	return text:gsub("^[\"`'](.-)[\"'`]$", "%1")
+end
+
+-- Code action handler with debugging
+function M.extract_translation()
+	local bufnr = vim.api.nvim_get_current_buf()
+	local filetype = vim.bo[bufnr].filetype
+
+	-- Only work in supported file types
+	if filetype ~= "typescript" and filetype ~= "svelte" then
+		vim.notify("Extract translation only works in TypeScript and Svelte files", vim.log.levels.WARN)
+		return
+	end
+
+	-- Get visual selection
+	local start_pos = vim.fn.getpos("'<")
+	local end_pos = vim.fn.getpos("'>")
+
+	if start_pos[2] == 0 or end_pos[2] == 0 then
+		vim.notify("Please select text first", vim.log.levels.WARN)
+		return
+	end
+
+	-- Get selected text
+	local start_row, start_col = start_pos[2] - 1, start_pos[3] - 1
+	local end_row, end_col = end_pos[2] - 1, end_pos[3]
+
+	local lines = vim.api.nvim_buf_get_text(bufnr, start_row, start_col, end_row, end_col, {})
+	local selected_text = table.concat(lines, "\n")
+
+	-- DEBUG: Print what we captured
+	print("Selected text: '" .. selected_text .. "'")
+	print("Length: " .. #selected_text)
+	print("Byte representation:")
+	for i = 1, #selected_text do
+		print("  " .. i .. ": " .. selected_text:byte(i) .. " ('" .. selected_text:sub(i, i) .. "')")
+	end
+
+	-- Check if it's a string literal
+	if not is_string_literal(selected_text) then
+		vim.notify(
+			"YYYelection must be a string literal (quoted text). Got: '" .. selected_text .. "'",
+			vim.log.levels.WARN
+		)
+		return
+	end
+
+	-- Extract string content
+	local string_content = extract_string_content(selected_text)
+
+	-- Generate key
+	local key = generate_key(string_content)
+
+	print("extracted " .. string_content .. " :key " .. key .. "<")
+
+	-- Get JSON file path
+	local json_path = get_json_file_path()
+	if not json_path then
+		vim.notify("Could not find project root", vim.log.levels.ERROR)
+		return
+	end
+
+	-- Add to JSON file
+	if not add_to_json(json_path, key, string_content) then
+		vim.notify("Failed to update JSON file", vim.log.levels.ERROR)
+		return
+	end
+
+	-- Replace selected text with m.key()
+	local replacement = "m." .. key .. "()"
+	vim.api.nvim_buf_set_text(bufnr, start_row, start_col, end_row, end_col, { replacement })
+
+	vim.notify(string.format("Extracted '%s' to key '%s'", string_content, key), vim.log.levels.INFO)
+end
+
 function M.setup(opts)
 	config.setup(opts)
 
@@ -162,6 +307,7 @@ function M.setup(opts)
 	vim.api.nvim_create_user_command("ParaglideShow", M.show, {})
 	vim.api.nvim_create_user_command("ParaglideHide", M.hide, {})
 	vim.api.nvim_create_user_command("ParaglideToggle", M.toggle, {})
+	vim.api.nvim_create_user_command("ParaglideExtract", M.extract_translation, { range = true })
 end
 
 return M
